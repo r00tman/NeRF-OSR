@@ -121,7 +121,7 @@ def sample_pdf(bins, weights, N_samples, det=False):
     return samples
 
 
-def render_single_image(rank, world_size, models, ray_sampler, chunk_size, iteration, rot_angle=0):
+def render_single_image(rank, world_size, models, ray_sampler, chunk_size, iteration, rot_angle=0, img_name=None):
     ##### parallel rendering of a single image
     ray_batch = ray_sampler.get_all()
 
@@ -201,7 +201,7 @@ def render_single_image(rank, world_size, models, ray_sampler, chunk_size, itera
                 torch.cuda.empty_cache()
 
             with torch.no_grad():
-                ret = net(ray_o, ray_d, fg_far_depth, fg_depth, bg_depth, iteration, img_name=ray_sampler.img_path,
+                ret = net(ray_o, ray_d, fg_far_depth, fg_depth, bg_depth, iteration, img_name=ray_sampler.img_path if img_name is None else img_name,
                           rot_angle=rot_angle)
 
             for key in ret:
@@ -303,22 +303,27 @@ def log_view_to_tb(writer, global_step, log_data, gt_img, mask, prefix=''):
 
 
 def setup(rank, world_size):
+    # initialize the process group
+    slurmjob = os.environ.get('SLURM_JOB_ID', '')
     os.environ['MASTER_ADDR'] = 'localhost'
-    # port = np.random.randint(12355, 12399)
-    # os.environ['MASTER_PORT'] = '{}'.format(port)
-    try:
-        os.environ['MASTER_PORT'] = '12413'
-        # initialize the process group
+    if len(slurmjob) > 0:
+        os.environ['MASTER_PORT'] = str(12000+int(slurmjob)%10000)
+        logger.info('using master port ' + os.environ['MASTER_PORT'] + ' based on slurmjob ' + slurmjob)
         torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
-    except RuntimeError:
+    else:
         try:
-            os.environ['MASTER_PORT'] = '12612'
-            # initialize the process group
+            os.environ['MASTER_PORT'] = '12413'
+            logger.info('using master port ' + os.environ['MASTER_PORT'] + ' based on first try')
             torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
         except RuntimeError:
-            os.environ['MASTER_PORT'] = '15125'
-            # initialize the process group
-            torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+            try:
+                os.environ['MASTER_PORT'] = '12612'
+                logger.info('using master port ' + os.environ['MASTER_PORT'] + ' based on second try')
+                torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
+            except RuntimeError:
+                os.environ['MASTER_PORT'] = '15125'
+                logger.info('using master port ' + os.environ['MASTER_PORT'] + ' based on third try')
+                torch.distributed.init_process_group("gloo", rank=rank, world_size=world_size)
 
 
 def cleanup():
@@ -454,9 +459,11 @@ def ddp_train_nerf(rank, args):
     torch.distributed.barrier()
 
     ray_samplers = load_data_split(args.datadir, args.scene, split='train',
-                                   try_load_min_depth=args.load_min_depth, use_ray_jitter=args.use_ray_jitter)
+                                   try_load_min_depth=args.load_min_depth, use_ray_jitter=args.use_ray_jitter,
+                                   resolution_level=args.resolution_level)
     val_ray_samplers = load_data_split(args.datadir, args.scene, split='validation',
-                                       try_load_min_depth=args.load_min_depth, skip=args.testskip, use_ray_jitter=args.use_ray_jitter)
+                                       try_load_min_depth=args.load_min_depth, skip=args.testskip, use_ray_jitter=args.use_ray_jitter,
+                                       resolution_level=args.resolution_level)
 
     # write training image names for autoexposure
     if args.optim_autoexpo or True:  # todo: upstream
@@ -652,6 +659,9 @@ def config_parser():
     parser.add_argument("--use_annealing", type=str2bool, default=True)
     parser.add_argument("--use_ray_jitter", type=str2bool, default=True)
 
+    # test options
+    parser.add_argument("--rotate_test_env", action='store_true', help='rotate test env (timelapse)')
+    parser.add_argument("--test_env", type=str, default=None, help='which environment to use for test render')
     # dataset options
     parser.add_argument("--datadir", type=str, default=None, help='input data directory')
     parser.add_argument("--scene", type=str, default=None, help='scene name')
@@ -684,6 +694,8 @@ def config_parser():
     # render only
     parser.add_argument("--render_splits", type=str, default='test',
                         help='splits to render')
+    parser.add_argument("--resolution_level", type=float, default=1,
+                        help='resolution multiplier')
 
     # cascade training
     parser.add_argument("--cascade_level", type=int, default=2,

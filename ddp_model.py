@@ -2,13 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import os
 import glob
+import os
 from utils import TINY_NUMBER, HUGE_NUMBER
 from collections import OrderedDict
 from nerf_network import Embedder, MLPNet
 from sph_util import illuminate_vec, rotate_env
-# import os
 import logging
 
 logger = logging.getLogger(__package__)
@@ -210,32 +209,38 @@ class NerfNet(nn.Module):
         fg_rgb_map = fg_pure_rgb_map * fg_shadow_map
 
         # render background
-        N_samples = bg_z_vals.shape[-1]
-        bg_ray_o = ray_o.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
-        bg_ray_d = ray_d.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
-        bg_viewdirs = viewdirs.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
-        bg_pts, _ = depth2pts_outside(bg_ray_o, bg_ray_d, bg_z_vals)  # [..., N_samples, 4]
-        input = torch.cat((self.bg_embedder_position(bg_pts, iteration),
-                           self.bg_embedder_viewdir(bg_viewdirs, iteration)), dim=-1)
-        # near_depth: physical far; far_depth: physical near
-        input = torch.flip(input, dims=[-2, ])
-        bg_z_vals = torch.flip(bg_z_vals, dims=[-1, ])  # 1--->0
-        bg_dists = bg_z_vals[..., :-1] - bg_z_vals[..., 1:]
-        bg_dists = torch.cat((bg_dists, HUGE_NUMBER * torch.ones_like(bg_dists[..., 0:1])), dim=-1)  # [..., N_samples]
-        bg_raw = self.bg_net(input)
-        bg_alpha = 1. - torch.exp(-bg_raw['sigma'] * bg_dists)  # [..., N_samples]
-        # Eq. (3): T
-        # maths show weights, and summation of weights along a ray, are always inside [0, 1]
-        T = torch.cumprod(1. - bg_alpha + TINY_NUMBER, dim=-1)[..., :-1]  # [..., N_samples-1]
-        T = torch.cat((torch.ones_like(T[..., 0:1]), T), dim=-1)  # [..., N_samples]
-        bg_weights = bg_alpha * T  # [..., N_samples]
+        if self.with_bg:
+            N_samples = bg_z_vals.shape[-1]
+            bg_ray_o = ray_o.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
+            bg_ray_d = ray_d.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
+            bg_viewdirs = viewdirs.unsqueeze(-2).expand(dots_sh + [N_samples, 3])
+            bg_pts, _ = depth2pts_outside(bg_ray_o, bg_ray_d, bg_z_vals)  # [..., N_samples, 4]
+            input = torch.cat((self.bg_embedder_position(bg_pts, iteration),
+                               self.bg_embedder_viewdir(bg_viewdirs, iteration)), dim=-1)
+            # near_depth: physical far; far_depth: physical near
+            input = torch.flip(input, dims=[-2, ])
+            bg_z_vals = torch.flip(bg_z_vals, dims=[-1, ])  # 1--->0
+            bg_dists = bg_z_vals[..., :-1] - bg_z_vals[..., 1:]
+            bg_dists = torch.cat((bg_dists, HUGE_NUMBER * torch.ones_like(bg_dists[..., 0:1])), dim=-1)  # [..., N_samples]
+            bg_raw = self.bg_net(input)
+            bg_alpha = 1. - torch.exp(-bg_raw['sigma'] * bg_dists)  # [..., N_samples]
+            # Eq. (3): T
+            # maths show weights, and summation of weights along a ray, are always inside [0, 1]
+            T = torch.cumprod(1. - bg_alpha + TINY_NUMBER, dim=-1)[..., :-1]  # [..., N_samples-1]
+            T = torch.cat((torch.ones_like(T[..., 0:1]), T), dim=-1)  # [..., N_samples]
+            bg_weights = bg_alpha * T  # [..., N_samples]
 
-        bg_rgb_map = torch.sum(bg_weights.unsqueeze(-1) * bg_raw['rgb'], dim=-2)  # [..., 3]
-        bg_depth_map = torch.sum(bg_weights * bg_z_vals, dim=-1)  # [...,]
+            bg_rgb_map = torch.sum(bg_weights.unsqueeze(-1) * bg_raw['rgb'], dim=-2)  # [..., 3]
+            bg_depth_map = torch.sum(bg_weights * bg_z_vals, dim=-1)  # [...,]
 
-        # composite foreground and background
-        bg_rgb_map = bg_lambda.unsqueeze(-1) * bg_rgb_map
-        bg_depth_map = bg_lambda * bg_depth_map
+            # composite foreground and background
+            bg_rgb_map = bg_lambda.unsqueeze(-1) * bg_rgb_map
+            bg_depth_map = bg_lambda * bg_depth_map
+        else:
+            bg_rgb_map = fg_rgb_map*0
+            bg_depth_map = fg_depth_map*0
+            bg_weights = fg_weights*0
+
         if self.with_bg:
             pure_rgb_map = fg_pure_rgb_map + bg_rgb_map
             shadow_map = fg_shadow_map
@@ -278,6 +283,8 @@ class NerfNetWithAutoExpo(nn.Module):
     def __init__(self, args, optim_autoexpo=False, img_names=None):
         super().__init__()
         self.nerf_net = NerfNet(args)
+
+        self.test_env = args.test_env
 
         self.optim_autoexpo = optim_autoexpo
         if self.optim_autoexpo:
@@ -367,12 +374,30 @@ class NerfNetWithAutoExpo(nn.Module):
         if img_name is not None:
             img_name = remap_name(img_name)
         env = None
-        if img_name in self.env_params:
+
+        if self.test_env is not None:
+            if not os.path.isdir(self.test_env):
+                if 'test_env_val' not in dir(self):
+                    env_data = np.loadtxt(self.test_env)
+                    self.test_env_val = torch.tensor(env_data, dtype=torch.float32).to(ray_o.device)
+                env = self.test_env_val
+                logger.warning('using env ' + self.test_env)
+            else:
+                if 'test_env_val' not in dir(self):
+                    self.test_env_val = dict()
+                    for env_fn in sorted(glob.glob(os.path.join(self.test_env, '*'))):
+                        env_data = np.loadtxt(env_fn)
+                        env_name = os.path.splitext(os.path.basename(env_fn))[0]
+                        self.test_env_val[env_name] = torch.tensor(env_data, dtype=torch.float32).to(ray_o.device)
+                env_name = img_name.split('/')[-1][:-4]
+                env = self.test_env_val[env_name]
+                logger.warning('using env ' + env_name)
+
+        elif img_name in self.env_params:
             env = self.env_params[img_name]
         else:
             logger.warning('no envmap found for ' + str(img_name))
             env = self.defaultenv
-
             # env = torch.tensor([
             #     [ 0.7953949,  0.4405923,  0.5459412],
             #     [ 0.3981450,  0.3526911,  0.6097158],

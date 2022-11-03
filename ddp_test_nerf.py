@@ -56,7 +56,8 @@ def ddp_test_nerf(rank, args):
             os.makedirs(out_dir, exist_ok=True)
 
         ###### load data and create ray samplers; each process should do this
-        ray_samplers = load_data_split(args.datadir, args.scene, split, try_load_min_depth=args.load_min_depth)
+        ray_samplers = load_data_split(args.datadir, args.scene, split, try_load_min_depth=args.load_min_depth,
+                                       resolution_level=args.resolution_level)
         for idx in range(len(ray_samplers)):
             ### each process should do this; but only main process merges the results
             fname = '{:06d}.png'.format(idx)
@@ -68,8 +69,13 @@ def ddp_test_nerf(rank, args):
                 continue
 
             time0 = time.time()
-            rot_angle = 0*idx/len(ray_samplers)*np.pi*2
-            ret = render_single_image(rank, args.world_size, models, ray_samplers[idx], args.chunk_size, start, rot_angle=rot_angle)
+            rot_angle = 0
+            if args.rotate_test_env:
+                rot_angle = idx/len(ray_samplers)*np.pi*2
+            ret = render_single_image(rank, args.world_size, models, ray_samplers[idx], args.chunk_size, start, rot_angle=rot_angle, img_name=fname)
+
+            # rot_angle = 0*idx/len(ray_samplers)*np.pi*2
+            # ret = render_single_image(rank, args.world_size, models, ray_samplers[idx], args.chunk_size, start, rot_angle=rot_angle)
             dt = time.time() - time0
             if rank == 0:    # only main process should do this
                 logger.info('Rendered {} in {} seconds'.format(fname, dt))

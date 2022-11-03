@@ -13,6 +13,19 @@ Our datasets and preprocessed Trevi dataset from PhotoTourism can be found [here
 
 See NeRF++ sections on [data](https://github.com/Kai-46/nerfplusplus#data) and [COLMAP](https://github.com/Kai-46/nerfplusplus#generate-camera-parameters-intrinsics-and-poses-with-colmap-sfm) on how to create adapt a new dataset for training. In addition, we also support masking via adding `mask` directory with monochrome masks alongside `rgb` directory in the dataset folder. For more details, refer to the provided datasets.
 
+
+So, if you have an image dataset, you would need to do the following:
+1. Set the path to your colmap binary in [colmap_runner/run_colmap.py:13](https://github.com/r00tman/NeRF-OSR/blob/main/colmap_runner/run_colmap.py#L13).
+2. Create a dataset directory in `data/`, e.g., `data/newdataset` and create `source` and `out` subfolders, e.g., `data/newdataset/source`, `data/newdataset/out`.
+3. Copy all the images to `data/newdataset/source`.
+4. Run `colmap_runner/run_colmap.py data/newdataset` in the root folder.
+5. This will set the data up, undistort images to `data/newdataset/rgb`, and calibrate the camera parameters to `data/newdataset/kai_cameras_normalized.json`.
+6. Optionally, you can now generate the masks by using `data/newdataset/rgb/*` images as the source, to filter out, e.g., people, bicycle, cars or any other dynamic objects. We used [this](https://github.com/NVIDIA/semantic-segmentation) repository to generate the masks. The grayscale masks should be placed to `data/newdataset/mask/` subfolder. You can use the provided datasets as reference. 
+7. Now that we have all data and calibrations, we need to create `train`, `val`, `test` splits. To do so, first create corresponding subfolders: `data/newdataset/{train,val,test}/rgb`. Then split the images as you like by copying them from `data/newdataset/rgb` to the corresponding split's `rgb` folder, e.g., `data/newdataset/train/rgb/`.
+8. Now you want to generate camera parameters for splits by running `colmap_runner/cvt.py` while in the dataset directory. It will automatically copy all camera parameters and masks to the split folders. 
+9. The dataset folder is ready. Now you need to create the dataset config. You can copy the config from the provided dataset, e.g., [here](https://github.com/r00tman/NeRF-OSR/blob/main/configs/europa/final.txt), to `configs/newdataset.txt`. Then you would need to change `datadir` to `data`, `scene` to `newdataset`, and `expname` in the config.
+10. Now you can launch the training by `python ddp_train_nerf.py --config configs/newdataset.txt`
+
 ## Models
 
 We provide pre-trained models [here](https://nextcloud.mpi-klsb.mpg.de/index.php/s/mGXYKpD8raQ8nMk). Put the folders into `logs/` sub-directory. Use the scripts from `scripts/` subfolder for testing.

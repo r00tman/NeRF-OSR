@@ -67,8 +67,8 @@ class RaySamplerSingleImage(object):
     def set_resolution_level(self, resolution_level):
         if resolution_level != self.resolution_level:
             self.resolution_level = resolution_level
-            self.W = self.W_orig // resolution_level
-            self.H = self.H_orig // resolution_level
+            self.W = int(self.W_orig // resolution_level)
+            self.H = int(self.H_orig // resolution_level)
             self.intrinsics = np.copy(self.intrinsics_orig)
             self.intrinsics[:2, :3] /= resolution_level
             # only load image at this time

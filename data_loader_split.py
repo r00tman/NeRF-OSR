@@ -24,7 +24,7 @@ def find_files(dir, exts):
         return []
 
 
-def load_data_split(basedir, scene, split, skip=1, try_load_min_depth=True, only_img_files=False, use_ray_jitter=True):
+def load_data_split(basedir, scene, split, skip=1, try_load_min_depth=True, only_img_files=False, use_ray_jitter=True, resolution_level=1):
 
     def parse_txt(filename):
         assert os.path.isfile(filename)
@@ -105,7 +105,8 @@ def load_data_split(basedir, scene, split, skip=1, try_load_min_depth=True, only
                                                   mask_path=mask_files[i],
                                                   min_depth_path=mindepth_files[i],
                                                   max_depth=max_depth,
-                                                  use_ray_jitter=use_ray_jitter))
+                                                  use_ray_jitter=use_ray_jitter,
+                                                  resolution_level=resolution_level))
 
     logger.info('Split {}, # views: {}'.format(split, cam_cnt))
 
